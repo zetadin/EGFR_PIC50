@@ -92,10 +92,10 @@ def get_feature_score_vector(lig_fmap, xray_fmap):
 # The Dataset subclass that generates molecular features on first access to the molecule
 class CustomMolDataset(Dataset):
     def __init__(self,
-                 ligs, # list of RDKit molecules. Expects "ID" and "dG" properties set.
-                       # "ID" -> unique identifier "dG" -> Y-values
+                 ligs, # list of RDKit molecules. Expects "ID" and "pIC50" properties set.
+                       # "ID" -> unique identifier "pIC50" -> Y-values
                  name="unnamed", # name of the cahce file
-                 representation_flags=[1]*(len(dataBlocks)-1), # list of booleans for the dataBlocks of features that should be calculated, default: all
+                 representation_flags=[1]*(len(dataBlocks)), # list of booleans for the dataBlocks of features that should be calculated, default: all
                  work_folder=os.path.split(os.path.realpath(__file__))[0], # look for config files in same folder as this file
                  cachefolder=os.path.split(os.path.realpath(__file__))[0], # save cache in same folder as this file
                  normalize_x=False, # should we normalize the data?
@@ -159,7 +159,7 @@ class CustomMolDataset(Dataset):
                     self.cache_fp=h5py.File(self.cache_fn, "a")
                     
             else: # cache in append mode requested
-                sef.cache_fp=h5py.File(self.cache_fn, "a")
+                self.cache_fp=h5py.File(self.cache_fn, "a")
                             
     def __del__(self):
         # close hdf5 cache file
@@ -263,7 +263,7 @@ class CustomMolDataset(Dataset):
         
             # load data from HDD or compute it
             X = self.transform(idx).astype(np.float32)
-            Y = np.array([float(lig.GetProp('dG')) if lig.HasProp('dG') else np.nan]) # kcal/mol
+            Y = np.array([float(lig.GetProp('pIC50')) if lig.HasProp('pIC50') else np.nan]) # kcal/mol
            
             # apply feature filter
             if(not self.X_filter is None):
@@ -412,7 +412,7 @@ class CustomMolDataset(Dataset):
             if(self.use_hdf5_cache and not (self.use_hdf5_cache=="read-only" or self.use_hdf5_cache=="r")):
                 lig_ID = self.ligs[lig_idx].GetProp("ID")
                 node = f"{lig_ID}/{dataBlocks(i).name}"
-                f.create_dataset(node, data=X_block_rep, dtype='f')
+                self.cache_fp.create_dataset(node, data=X_block_rep, dtype='f')
                 
         return(np.concatenate(tuple(vecs), axis=0)) # flatten into a 1D array
 
