@@ -36,16 +36,12 @@ def suppress_stdout_stderr():
         with redirect_stderr(fnull) as err, redirect_stdout(fnull) as out:
             yield (err, out)
 
-class dataBlocks(Enum):
-    #def _generate_next_value_(name, start, count, last_values):
-        #print(name, start, count, last_values)
-        #raise()
-        #return count-1
-    
+class dataBlocks(Enum):   
     MACCS = 0
     rdkitFP = auto()
     minFeatFP = auto() # causes triangle inequality violations and hence unequal number of features for some entries in the FreeSolv set
-    MorganFP = auto()
+    MorganFP2 = auto()
+    MorganFP3 = auto()
     
     Descriptors = auto()
     EState_FP = auto()
@@ -73,13 +69,6 @@ class dataBlocks(Enum):
     
     
 # helper functions that used to be in a separate file
-def mask_borders(arr, num=1):
-    mask = np.zeros(arr.shape, bool)
-    for dim in range(arr.ndim):
-        mask[tuple(slice(0, num) if idx == dim else slice(None) for idx in range(arr.ndim))] = True
-        mask[tuple(slice(-num, None) if idx == dim else slice(None) for idx in range(arr.ndim))] = True
-    return mask
-
 def wiener_index(m):
     res = 0
     amat = Chem.GetDistanceMatrix(m)
@@ -98,67 +87,53 @@ def get_feature_score_vector(lig_fmap, xray_fmap):
         vec[f]=np.sum([lig_fmap.GetFeatFeatScore(lig_fmap.GetFeature(f_l), xray_feature) for f_l in range(lig_fmap.GetNumFeatures())])
     return(vec)
 
-def ndmesh(*xi,**kwargs):
-    if len(xi) < 2:
-        msg = 'meshgrid() takes 2 or more arguments (%d given)' % int(len(xi) > 0)
-        raise ValueError(msg)
-
-    args = np.atleast_1d(*xi)
-    ndim = len(args)
-    copy_ = kwargs.get('copy', True)
-
-    s0 = (1,) * ndim
-    output = [x.reshape(s0[:i] + (-1,) + s0[i + 1::]) for i, x in enumerate(args)]
-
-    shape = [x.size for x in output]
-
-    # Return the full N-D matrix (not only the 1-D vector)
-    if copy_:
-        mult_fact = np.ones(shape, dtype=int)
-        return [x * mult_fact for x in output]
-    else:
-        return np.broadcast_arrays(*output)
-
 
     
 # The Dataset subclass that generates molecular features on first access to the molecule
 class CustomMolDataset(Dataset):
-    def __init__(self, ligs,
-                 representation_flags=[1]*(len(dataBlocks)-1), molecular_db_file=None,
-                 out_folder=os.path.split(os.path.realpath(__file__))[0], datafolder=os.path.split(os.path.realpath(__file__))[0],
-                 normalize_x=False, X_filter=None, verbose=False,
-                 cachefolder=None, use_cache=False, use_hdf5_cache=False, use_combined_cache=True,
-                 internal_cache_maxMem_MB=512):
-        
+    def __init__(self,
+                 ligs, # list of RDKit molecules. Expects "ID" and "dG" properties set.
+                       # "ID" -> unique identifier "dG" -> Y-values
+                 name="unnamed", # name of the cahce file
+                 representation_flags=[1]*(len(dataBlocks)-1), # list of booleans for the dataBlocks of features that should be calculated, default: all
+                 work_folder=os.path.split(os.path.realpath(__file__))[0], # look for config files in same folder as this file
+                 cachefolder=os.path.split(os.path.realpath(__file__))[0], # save cache in same folder as this file
+                 normalize_x=False, # should we normalize the data?
+                 X_filter=None,     # numpy array of indeces of the features we actually want, None for all
+                 verbose=False,     # be noisy? Debug output.
+                 use_hdf5_cache=True, # other options are False and "read-only", refers to a cache file in the FS
+                 internal_cache_maxMem_MB=512 # max size of in-memory cache
+                 ):
         self.representation_flags=representation_flags
         self.active_flags=np.where(self.representation_flags)[0]
-        self.out_folder=out_folder
-        self.datafolder=datafolder
+        self.work_folder=work_folder
         self.normalize_x=normalize_x
         self.norm_mu=None
         self.norm_width=None
         self.X_filter=None
         self.internal_filtered_cache=None
         self.verbose=verbose
-        self.use_cache=use_cache
         self.use_hdf5_cache=use_hdf5_cache
-        self.use_combined_cache=use_combined_cache
         
+        # used for a fast in-memory cache as a numpy array
         self._internal_cache_maxMem=internal_cache_maxMem_MB*1024*1024 # 512 MB by default
         
+        # set up for feature filtering
         if(X_filter is not None):
             if type(X_filter) is np.ndarray:
                 if(X_filter.ndim!=1):
-                    raise ValueError("X_filter should a 1D array or a filename of a pickled 1D array.")
+                    raise ValueError("X_filter should a 1D nunpy array or a filename of a pickled 1D array.")
                 self.X_filter=X_filter
             elif(not os.path.exists(X_filter)):
                 raise(Exception(f"No such file: {X_filter}"))
             else:
                 with open(X_filter, 'rb') as f:
                     self.X_filter=pickle.load(f)
+                    
+        # set up for feature calculation
         self.ligs=ligs
         if(self.representation_flags[int(dataBlocks.minFeatFP)]):
-            fdefName = self.out_folder+'/MinimalFeatures.fdef'
+            fdefName = self.work_folder+'/MinimalFeatures.fdef'
             featFactory = ChemicalFeatures.BuildFeatureFactory(fdefName)
             self.sigFactory = SigFactory(featFactory,minPointCount=2,maxPointCount=3, trianglePruneBins=False)
             self.sigFactory.SetBins([(0,2),(2,5),(5,8)])
@@ -167,45 +142,34 @@ class CustomMolDataset(Dataset):
 
             
 
-        #representation cache path precalc
-        
-        #repr_hash=str(abs(hash(np.array(self.representation_flags, dtype=int).tobytes())))[:5]
-        repr_hash=hashlib.md5(np.packbits(np.array(representation_flags, dtype=bool)).tobytes()).hexdigest()
-        if(cachefolder is None):
-            self.cachefolder=f"{self.datafolder}/combined_modular_repr_cache/{repr_hash}"        
-        else:
+        #open the cache file
+        if(self.use_hdf5_cache):
             self.cachefolder=cachefolder
-        if (self.use_combined_cache and not os.path.exists(self.cachefolder)): #make sure the folder exists
-            try:
+            self.name=name
+            self.cache_fn=f"{self.cachefolder}/{self.name}.hdf5"
+            if not os.path.exists(self.cachefolder): #make sure the folder exists
                 os.makedirs(self.cachefolder)
-            except OSError as e:
-                if e.errno != errno.EEXIST:
-                    raise
-                    
-        # hdf5 caches
-        if(self.use_hdf5_cache):
-            if not os.path.exists(self.datafolder+"/modular_repr_cache_hdf5"): #make sure the folder exists
-                os.makedirs(self.datafolder+"/modular_repr_cache_hdf5")
-            self.hdf5_repr_cache_files=[]
-            for i in range(len(self.representation_flags)):
-                if(self.representation_flags[i]):
-                    fn = self.datafolder+"/modular_repr_cache_hdf5/"+dataBlocks(i).name+".hdf5"
-                    self.hdf5_repr_cache_files.append( h5py.File(fn,'a'))
+                
+            if(self.use_hdf5_cache=="read-only" or self.use_hdf5_cache=="r"): # cache in read-only mode requested
+                if(os.path.exists(self.cache_fn)): # requested read-only, but no chache file found
+                    self.cache_fp=h5py.File(self.cache_fn, "r")
                 else:
-                    self.hdf5_repr_cache_files.append(None)
+                    print(f"{cache_fn} does not exist yet. Switchinhg to append mode and will create one.")
+                    self.use_hdf5_cache=True
+                    self.cache_fp=h5py.File(self.cache_fn, "a")
                     
+            else: # cache in append mode requested
+                sef.cache_fp=h5py.File(self.cache_fn, "a")
+                            
     def __del__(self):
-        # close hdf5 caches files
+        # close hdf5 cache file
         if(self.use_hdf5_cache):
-            for i in range(len(self.representation_flags)):
-                if(self.representation_flags[i]):
-                    self.hdf5_repr_cache_files[i].close()
+            self.cache_fp.close()
                     
     def find_ranges(self):
         allX=np.array([entry[0] for entry in self])
         allrange=np.zeros((allX.shape[1],2))
-        # allX axis 0 loops over ligands
-        allrange[:,0]=np.min(allX, axis=0)
+        allrange[:,0]=np.min(allX, axis=0) # axis=0 loops ove all the ligands
         allrange[:,1]=np.max(allX, axis=0)
         return(allrange)
 
@@ -232,7 +196,7 @@ class CustomMolDataset(Dataset):
             if(self.verbose):
                 print(f"Reading normalization factors for a {norm_mu.shape} dataset")
         else:
-            self.normalize_x=False
+            self.normalize_x=False # temporarily disable normalization so we can get raw values
             allX=np.array([entry[0] for entry in self])
             self.norm_mu=np.mean(allX, axis=0)
             self.norm_width=np.std(allX, axis=0)
@@ -246,16 +210,20 @@ class CustomMolDataset(Dataset):
             
             if(self.verbose):
                 print(f"Generating normalization factors for a {allX.shape} dataset")
+                
+        # build in-memory cache
         self.build_internal_filtered_cache()
         _=gc.collect()
 
 
+    # copies normalization factors from another dataset. Eg. for making a test set that has the same normalization as all whole dataset.
     def copy_normalization_factors(self, other):
         if(not np.array_equal(self.X_filter,other.X_filter)):
             raise(Exception("Mismatching X_filters!"))
         self.norm_mu=other.norm_mu
         self.norm_width=other.norm_width
-        
+       
+    # builds the in-memory cache
     def build_internal_filtered_cache(self):
         if(self.norm_mu is None and self.normalize_x):
             raise(Exception("call build_internal_filtered_cache() only after normalization!"))
@@ -272,9 +240,10 @@ class CustomMolDataset(Dataset):
         allY=np.array(allY)
         self.internal_filtered_cache=(allX, allY)
         if(self.verbose):
-            print(f"saving an internal filtered & normalized cache of shape ({self.internal_filtered_cache[0].shape},{self.internal_filtered_cache[1].shape})")
+            print(f"Creating an in-memory filtered & normalized cache of shape ({self.internal_filtered_cache[0].shape},{self.internal_filtered_cache[1].shape})")
 
 
+    # normalizes features of a single ligand
     def normalize_input(self,x):
         if(self.norm_mu is None):
             self.find_normalization_factors()
@@ -285,36 +254,32 @@ class CustomMolDataset(Dataset):
     def __len__(self):
         return len(self.ligs)
 
+    # main acess method for data in Dataset, eg through Dataset[index]
     def __getitem__(self, idx):
         lig = self.ligs[idx]
 
+        # if there is no in-memory cache
         if(self.internal_filtered_cache is None):
-            lig_ID = lig.GetProp("ID")
-            #check combined repr cache
-            cache_fn = self.cachefolder+'/'+lig_ID+'.pickle'
-            if(self.use_combined_cache and os.path.isfile(cache_fn)):
-                with open(cache_fn, 'rb') as f:
-                    X, Y = pickle.load(f)
-            else:
-                X = self.transform(idx).astype(np.float32)
-                Y = np.array([float(lig.GetProp('dG')) if lig.HasProp('dG') else np.nan]) # kcal/mol
-                #save cache
-                if(self.use_combined_cache):
-                    with open(cache_fn, 'wb') as f:
-                        pickle.dump((X, Y), f)
-            #if(self.X_filter):
+        
+            # load data from HDD or compute it
+            X = self.transform(idx).astype(np.float32)
+            Y = np.array([float(lig.GetProp('dG')) if lig.HasProp('dG') else np.nan]) # kcal/mol
+           
+            # apply feature filter
             if(not self.X_filter is None):
                 X=X[self.X_filter]
+            # normalize
             if(self.normalize_x):
-                #print(f"{lig_ID} width: {X.shape}")
                 X=self.normalize_input(X)
                 
+        # otherwize read the in-memory cache
         else:
             X=self.internal_filtered_cache[0][idx]
             Y=self.internal_filtered_cache[1][idx]
         
         return X, Y
             
+    # Compute the different descriptors in blocks
     def generate_DataBlock(self, lig, blockID):
         blockID=dataBlocks(blockID)
         
@@ -327,9 +292,17 @@ class CustomMolDataset(Dataset):
                     MACCS_arr[j]=1;
             return(MACCS_arr)
         
-        elif(blockID==dataBlocks.MorganFP):
+        elif(blockID==dataBlocks.MorganFP2):
             Chem.GetSymmSSSR(lig)
             Morgan_txt=cDataStructs.BitVectToText(rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 2))
+            Morgan_arr=np.zeros(len(Morgan_txt), dtype=np.uint8)
+            for j in range(len(Morgan_txt)):
+                if(Morgan_txt[j]=="1"):
+                    Morgan_arr[j]=1;
+            return(Morgan_arr)
+        elif(blockID==dataBlocks.MorganFP3):
+            Chem.GetSymmSSSR(lig)
+            Morgan_txt=cDataStructs.BitVectToText(rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 3))
             Morgan_arr=np.zeros(len(Morgan_txt), dtype=np.uint8)
             for j in range(len(Morgan_txt)):
                 if(Morgan_txt[j]=="1"):
@@ -414,46 +387,34 @@ class CustomMolDataset(Dataset):
         
         
             
-
+    # load descriptors from HDD or compute them via transform()
     def transform(self, lig_idx):
         vecs=[]
-        #for i in range(len(self.representation_flags)):
-        #    if(self.representation_flags[i]):
                 
+        # iterate through requested blocks of descriptors
         for i in self.active_flags:
-            #where are the block chaches?
-            cache_folder=self.datafolder+"/modular_repr_cache/"+dataBlocks(i).name+"/"
-                            
-            if not os.path.exists(cache_folder): #make sure the folder exists
-                try:
-                    os.makedirs(cache_folder)
-                except OSError as e:
-                    if e.errno != errno.EEXIST:
-                        raise
-                    
-            #if block is cached, read it
-            lig_ID = self.ligs[lig_idx].GetProp("ID")
-            cache_fn = cache_folder+'/'+lig_ID+'.pickle'
-            hdf5_tn=f"/{dataBlocks(i).name}/{lig_ID}"
-            # if(self.use_hdf5_cache and hdf5_tn in self.hdf5_repr_cache_files[i]): #try hdf5 cache first
-            #     X_block_rep=self.hdf5_repr_cache_files[i][hdf5_tn][:]
-            # elif(os.path.isfile(cache_fn)): #try pickle cache second
-            #     with open(cache_fn, 'rb') as f:
-            #         X_block_rep = pickle.load(f)
-            #     if(self.use_hdf5_cache): # also make the hdf5 cache from pickles
-            #         self.hdf5_repr_cache_files[i].create_dataset(hdf5_tn, data=X_block_rep, dtype='f')
-            # else: #generate a block and cache it otherwize
-            X_block_rep = self.generate_DataBlock(self.ligs[lig_idx], i)
-                    
-                # if(self.use_cache):
-                #     with open(cache_fn, 'wb') as f:
-                #         pickle.dump(X_block_rep, f)
-                # if(self.use_hdf5_cache):
-                #     self.hdf5_repr_cache_files[i].create_dataset(hdf5_tn, data=X_block_rep, dtype='f')
             
-            #add to overall representation
-            vecs.append(X_block_rep)
-        return(np.concatenate(tuple(vecs), axis=0))
+            # first try reading from cache
+            if self.use_hdf5_cache:
+                lig_ID = self.ligs[lig_idx].GetProp("ID")
+                node = f"{lig_ID}/{dataBlocks(i).name}"
+                # is there an entry for this ligand & dataBlock?
+                if(node in self.cache_fp.keys()):
+                    X_block_rep = self.cache_fp[node] # then read it
+                    vecs.append(X_block_rep) #and add it to the overall representation
+                    continue # next dataBlock
+                    
+            #if not cashed, compute it
+            X_block_rep = self.generate_DataBlock(self.ligs[lig_idx], i)
+            vecs.append(X_block_rep) #add to overall representation
+                  
+            # and cache it if in append mode
+            if(self.use_hdf5_cache and not (self.use_hdf5_cache=="read-only" or self.use_hdf5_cache=="r")):
+                lig_ID = self.ligs[lig_idx].GetProp("ID")
+                node = f"{lig_ID}/{dataBlocks(i).name}"
+                f.create_dataset(node, data=X_block_rep, dtype='f')
+                
+        return(np.concatenate(tuple(vecs), axis=0)) # flatten into a 1D array
 
 
 
