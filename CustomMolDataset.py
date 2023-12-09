@@ -120,7 +120,7 @@ class CustomMolDataset(Dataset):
         
         # set up for feature filtering
         if(X_filter is not None):
-            if type(X_filter) is np.ndarray:
+            if isinstance(X_filter, np.ndarray):
                 if(X_filter.ndim!=1):
                     raise ValueError("X_filter should a 1D nunpy array or a filename of a pickled 1D array.")
                 self.X_filter=X_filter
@@ -163,7 +163,7 @@ class CustomMolDataset(Dataset):
                             
     def __del__(self):
         # close hdf5 cache file
-        if(self.use_hdf5_cache):
+        if(self.use_hdf5_cache and self.cache_fp):
             self.cache_fp.close()
                     
     def find_ranges(self):
@@ -174,42 +174,19 @@ class CustomMolDataset(Dataset):
         return(allrange)
 
     def find_normalization_factors(self):
-        # read the normalization cache if it was previusly saved
-        filt_spec="_no_X_filter"
-        fn_no_filt=f"{self.cachefolder}/normalization_factors_{filt_spec}.dat"
-        if(self.X_filter is not None):
-            filt_hash=hashlib.md5(np.packbits(np.array(self.X_filter, dtype=bool)).tobytes()).hexdigest()
-            filt_spec="_fiter_hash_"+filt_hash
-        fn=f"{self.cachefolder}/normalization_factors_{filt_spec}.dat"
-        if(os.path.exists(fn)):
-            temp=np.loadtxt(fn)
-            temp=temp.astype(np.float32) # defaults to float64, which translates to torch's double and is incompatible with linear layers
-            self.norm_mu=temp[0,:]
-            self.norm_width=temp[1,:]
-            if(self.verbose):
-                print(f"Reading normalization factors for a {norm_mu.shape} dataset")
-        elif(os.path.exists(fn_no_filt) and self.X_filter is not None):
-            temp=np.loadtxt(fn_no_filt)
-            temp=temp.astype(np.float32) # defaults to float64, which translates to torch's double and is incompatible with linear layers
-            self.norm_mu=temp[0,self.X_filter]
-            self.norm_width=temp[1,self.X_filter]
-            if(self.verbose):
-                print(f"Reading normalization factors for a {norm_mu.shape} dataset")
-        else:
-            self.normalize_x=False # temporarily disable normalization so we can get raw values
-            allX=np.array([entry[0] for entry in self])
-            self.norm_mu=np.mean(allX, axis=0)
-            self.norm_width=np.std(allX, axis=0)
-            self.norm_width[self.norm_width<1e-7]=1.0 # if standard deviation is 0, don't scale
-            self.normalize_x=True
-            
-            # save normalization factors
-            if not os.path.exists(self.cachefolder): #make sure the folder exists
-                os.makedirs(self.cachefolder, exist_ok=True)
-            np.savetxt(fn, np.vstack((self.norm_mu, self.norm_width)))
-            
-            if(self.verbose):
-                print(f"Generating normalization factors for a {allX.shape} dataset")
+        self.normalize_x=False # temporarily disable normalization so we can get raw values
+        allX=np.array([entry[0] for entry in self])
+        self.norm_mu=np.mean(allX, axis=0)
+        
+        # std sometimes overflows from very large feature values, so temporarily scale them
+        ranges = self.find_ranges()
+        scales = ranges[:,1]-ranges[:,0]
+        self.norm_width=np.std(allX/scales, axis=0)*scales
+        self.norm_width[self.norm_width<1e-7]=1.0 # if standard deviation is 0, don't scale
+        self.normalize_x=True
+        
+        if(self.verbose):
+            print(f"Generating normalization factors for a {allX.shape} dataset")
                 
         # build in-memory cache
         self.build_internal_filtered_cache()
