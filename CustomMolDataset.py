@@ -191,6 +191,35 @@ class CustomMolDataset(Dataset):
         # build in-memory cache
         self.build_internal_filtered_cache()
         _=gc.collect()
+        
+        # save normalization factors for later reuse in prediction pipeline
+        if(self.use_hdf5_cache): # note: this with ovewrite the the normalization factors in read-only mode
+            n_features = self.transform(0).shape[0] # get all features for molecule 0
+            with open(f"{self.name}_NormFactors_{n_features}_Features.pickle", 'wb') as f:
+                pickle.dump((self.norm_mu, self.norm_width), f)
+
+                
+    def read_normalization_factors(self, fname):
+        # read previously saved normalization factors from a file
+        with open(fname, 'rb') as f:
+            (mu, width) = pickle.load(f)
+            
+        # sanity checks
+        if(mu.shape != width.shape):
+            raise ValueError(f"Mutually incompatible normalization factors loaded from {fname}!")
+            
+        # check if loaded factors have same width as current data representation
+        features_shape = self.transform(0).shape # get all features for molecule 0
+        if(mu.shape[0] != features_shape[0] or width.shape[0] != features_shape[0]):
+            raise ValueError(f"Shapes of loaded factors {mu.shape} and {width.shape} loaded from {fname}"+
+                              f" do not match curent molecular representation shape {features_shape}!")
+        
+        # if everything passes, store the factors for use
+        self.norm_mu = mu
+        self.norm_width = width
+            
+        # Set the normalize flag
+        self.normalize_x = True
 
 
     # copies normalization factors from another dataset. Eg. for making a test set that has the same normalization as all whole dataset.
