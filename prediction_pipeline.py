@@ -6,6 +6,7 @@
  Models, feature selection, and normalization was saved to pickle files which we load here.
 """
 
+import sys
 import argparse
 import pickle
 import numpy as np
@@ -14,7 +15,7 @@ from tqdm import tqdm, trange
 from rdkit import Chem
 from rdkit.Chem import rdmolops
 
-from CustomMolDataset import CustomMolDataset, dataBlocks
+from custom_mol_dataset import CustomMolDataset, DataBlocks
 
 # only run code if executing current file, not if importing it for some reason
 if __name__ == "__main__":
@@ -76,8 +77,8 @@ if __name__ == "__main__":
                             "Descriptors", "EState_FP", "Graph_desc",
                             "MOE", "MQN", "AUTOCORR2D", "PEOE_VSA",
                             "SMR_VSA", "SlogP_VSA"]
-    descriptorFlags = [int(dataBlocks(i).name in descriptorBlocknames)
-                       for i in range(len(dataBlocks))]
+    descriptorFlags = [int(DataBlocks(i).name in descriptorBlocknames)
+                       for i in range(len(DataBlocks))]
     ds = CustomMolDataset(molecules,
                           representation_flags = descriptorFlags, # encodes selection
                                                                   # of descriptor types to use
@@ -131,5 +132,5 @@ if __name__ == "__main__":
     print("\n\nDone.")
     
     del ds # to prevent exception in hdf5's close() on exit()
-    exit(0)
+    sys.exit(0)
     

@@ -18,9 +18,9 @@ builds RDKit molecule instances for all SMILES strings in it. This file also
 generates 3D conformations for them.
 
 - Step2_GenerateFeatures.ipynb generates both 2D and 3D descriptors for the molecules
-with the help of a pyTorch Dataset subclass defined in CustomMolDataset.py.
+with the help of a pyTorch Dataset subclass defined in custom_mol_dataset.py.
 
-- CustomMolDataset.py defines a pyTorch Dataset subclass that precomputes most molecular
+- custom_mol_dataset.py defines a pyTorch Dataset subclass that precomputes most molecular
 descriptors available in RDKit and chaches them in an hdf5 file for quick retriaval.
 It also supports feature selection via an index filter, feature normalization,
 as well as an in-memory cache for the normalized data, when it fits into RAM.
