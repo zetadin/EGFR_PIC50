@@ -7,7 +7,7 @@ The jupyter notebook files in this repository track my desicion-making process
 for building a classifier to distinguish active (pIC50>8) from inactive molecules
 for binding with EGFR. While the prediction pipeline is in a standalone file.
 
-- predictionPipeline.py runs the prediction pipeline by reading SMILES srings from
+- prediction_pipeline.py runs the prediction pipeline by reading SMILES srings from
 an input file. It has built in documentation acessible via "predictionPipeline.py -h".
 It expects to be run in the curent folder, as it loads saved models and feature
 engineering information from local files. It can be tested with "predTest.smi",
@@ -34,7 +34,7 @@ Variations of it are also tested with primary component analysis (PCA) and
 partial least squares (PLS) driven dimentinality reduction of the feature space.
 Optimal results are obtained with a PLS transformation of the features,
 which drastically reduces execution time while marginally improving the F1 score.
-Therefore, this approach is selected for the prediction pipe-line.
+Therefore, this approach is selected for the prediction pipeline.
 
 In the model selection procedure, performance is quantified primarily via the F1 score,
 which offers a good tradeoff between recall and precision needed in an effective binary classifier,
