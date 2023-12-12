@@ -194,7 +194,13 @@ class CustomMolDataset(Dataset):
         
         # save normalization factors for later reuse in prediction pipeline
         if(self.use_hdf5_cache): # note: this with ovewrite the the normalization factors in read-only mode
-            n_features = self.transform(0).shape[0] # get all features for molecule 0
+            # find number of features, to distinguish the cached filed with different X_filters and representations
+            if(self.X_filter is not None): # that is size of the X_filter, if set
+                n_features = self.X_filter.shape[0]
+            else: # or size of transform() output if not
+                n_features = self.transform(0).shape[0] # get all features for molecule 0
+                
+            # then pickle factors into appropriately named file
             with open(f"{self.name}_NormFactors_{n_features}_Features.pickle", 'wb') as f:
                 pickle.dump((self.norm_mu, self.norm_width), f)
 
@@ -209,9 +215,14 @@ class CustomMolDataset(Dataset):
             raise ValueError(f"Mutually incompatible normalization factors loaded from {fname}!")
             
         # check if loaded factors have same width as current data representation
-        features_shape = self.transform(0).shape # get all features for molecule 0
+        # that is size of the X_filter, if set
+        if(self.X_filter is not None):
+            features_shape = self.X_filter.shape
+        # or size of transform() output if not
+        else:
+            features_shape = self.transform(0).shape # get all features for molecule 0
         if(mu.shape[0] != features_shape[0] or width.shape[0] != features_shape[0]):
-            raise ValueError(f"Shapes of loaded factors {mu.shape} and {width.shape} loaded from {fname}"+
+            raise ValueError(f"Shapes of loaded normalization factors {mu.shape} and {width.shape} loaded from {fname}"+
                               f" do not match curent molecular representation shape {features_shape}!")
         
         # if everything passes, store the factors for use
@@ -224,8 +235,29 @@ class CustomMolDataset(Dataset):
 
     # copies normalization factors from another dataset. Eg. for making a test set that has the same normalization as all whole dataset.
     def copy_normalization_factors(self, other):
-        if(not np.array_equal(self.X_filter,other.X_filter)):
-            raise(Exception("Mismatching X_filters!"))
+        # sanity checks
+        # compare X_filters, if set
+        if(self.X_filter is not None and
+           other.X_filter is not None and
+           not np.array_equal(self.X_filter,other.X_filter)
+           ):
+            raise(Exception("Mismatching X_filters in Datasets!"))
+        
+        # compare feature array sizes
+        if(self.X_filter is not None): # if X_filter set
+            m_features = self.X_filter.shape[0]
+        else: # read number of features from transform instead
+            m_features = self.transform(0).shape[0]
+            
+        # same for the other Dataset
+        if(other.X_filter is not None): # if X_filter set
+            o_features = other.X_filter.shape[0]
+        else: # read number of features from transform instead
+            o_features = other.transform(0).shape[0]
+        
+        if(m_features != o_features):
+            raise(Exception("Mismatched number of used features in Datasets!"))
+        
         self.norm_mu=other.norm_mu
         self.norm_width=other.norm_width
        
