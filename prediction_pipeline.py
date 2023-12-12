@@ -87,7 +87,7 @@ if __name__ == "__main__":
                                                     # we will load normalization factors later
                           use_hdf5_cache = True,    # cache results to an hdf5 file
                           name = "predTest",        # name of the hdf5 cache file
-                          internal_cache_maxMem_MB = args.maxcache # size of the requested cache
+                          internal_cache_max_mem_MB = args.maxcache # size of the requested cache
                          )
     
     # compute 2D descriptors now

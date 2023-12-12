@@ -9,15 +9,15 @@ descriptor-derrived features.
 
 import os
 import gc
+import pickle
 from enum import Enum, auto
 from inspect import getmembers, isfunction, getfullargspec
 
 import h5py
-import pickle
 import numpy as np
 from torch.utils.data import Dataset
 from rdkit import Chem
-from rdkit.Chem import Descriptors, rdMolDescriptors, ChemicalFeatures
+from rdkit.Chem import Descriptors, rdMolDescriptors, ChemicalFeatures, rdmolops
 from rdkit.DataStructs import cDataStructs
 from rdkit.Chem.Pharm2D.SigFactory import SigFactory
 from rdkit.Chem.Pharm2D import Generate
@@ -69,12 +69,21 @@ def wiener_index(m):
     Part of graph descriptors group.
     """
     res = 0
-    amat = Chem.GetDistanceMatrix(m)
+    amat = rdmolops.GetDistanceMatrix(m)
     num_atoms = m.GetNumAtoms()
     for i in range(num_atoms):
         for j in range(i+1,num_atoms):
             res += amat[i][j]
     return res
+    
+def bit_vect_to_array(vec):
+    """Conversion function from RDKit's bit vectors to a numpy array"""
+    txt=cDataStructs.BitVectToText( vec )
+    arr=np.zeros(len(txt), dtype=np.uint8)
+    for j,c in enumerate(txt):
+        if c=="1":
+            arr[j]=1
+    return arr
 
     
 # The Dataset subclass that generates molecular features on first access to the molecule
@@ -92,12 +101,12 @@ class CustomMolDataset(Dataset):
                  representation_flags=[1]*(len(DataBlocks)), # list of booleans
                        #which marks DataBlocks of features that should be calculated, default: all
                  work_folder=os.path.split(os.path.realpath(__file__))[0], # folder of input files
-                 cachefolder=os.path.split(os.path.realpath(__file__))[0], # folder of cache file
+                 cache_folder=os.path.split(os.path.realpath(__file__))[0], # folder of cache file
                  normalize_x=False, # should we normalize the data?
                  X_filter=None,     # numpy array of indeces of the features we want, None for all
                  verbose=False,     # be noisy? Debug output.
                  use_hdf5_cache=True, # use the hdf5 cache file? True/False/"read_only"
-                 internal_cache_maxMem_MB=512 # max size of in-memory cache in MB
+                 internal_cache_max_mem_MB=512 # max size of in-memory cache in MB
                  ):
         self.representation_flags=representation_flags
         self.active_flags=np.where(self.representation_flags)[0]
@@ -112,7 +121,7 @@ class CustomMolDataset(Dataset):
         self.ligs=ligs
         
         # used for a fast in-memory cache as a numpy array
-        self._internal_cache_maxMem=internal_cache_maxMem_MB*1024*1024 # 512 MB by default
+        self._internal_cache_max_mem=internal_cache_max_mem_MB*1024*1024 # 512 MB by default
         
         # set up for feature filtering
         if X_filter is not None:
@@ -130,30 +139,30 @@ class CustomMolDataset(Dataset):
         
         # load configuration for SigFactory: binned custom feature definitions of RDKit (SLOW!)
         if self.representation_flags[int(DataBlocks.minFeatFP)]:
-            fdefName = self.work_folder+'/MinimalFeatures.fdef'
-            featFactory = ChemicalFeatures.BuildFeatureFactory(fdefName)
-            self.sigFactory = SigFactory(featFactory,
+            fdef_name = self.work_folder+'/MinimalFeatures.fdef'
+            feat_factory = ChemicalFeatures.BuildFeatureFactory(fdef_name)
+            self.sig_factory = SigFactory(feat_factory,
                                          minPointCount=2,
                                          maxPointCount=3,
                                          trianglePruneBins=False)
-            self.sigFactory.SetBins([(0,2),(2,5),(5,8)])
-            self.sigFactory.Init()
+            self.sig_factory.SetBins([(0,2),(2,5),(5,8)])
+            self.sig_factory.Init()
 
         # open the cache file
         if self.use_hdf5_cache:
-            self.cachefolder=cachefolder
+            self.cache_folder=cache_folder
             self.name=name
-            self.cache_fn=f"{self.cachefolder}/{self.name}.hdf5"
-            if not os.path.exists(self.cachefolder): #make sure the folder exists
-                os.makedirs(self.cachefolder)
+            self.cache_fn=f"{self.cache_folder}/{self.name}.hdf5"
+            if not os.path.exists(self.cache_folder): #make sure the folder exists
+                os.makedirs(self.cache_folder)
                 
-            if(self.use_hdf5_cache=="read-only" or self.use_hdf5_cache=="r"):
+            if(self.use_hdf5_cache in ["read-only", "r"]):
                 # cache in read-only mode requested
                 
                 if os.path.exists(self.cache_fn): # requested read-only, but no chache file found
                     self.cache_fp=h5py.File(self.cache_fn, "r")
                 else:
-                    print(f"{cache_fn} does not exist yet."
+                    print(f"{self.cache_fn} does not exist yet."
                           " Switchinhg to append mode and will create one.")
                     self.use_hdf5_cache=True
                     self.cache_fp=h5py.File(self.cache_fn, "a")
@@ -169,27 +178,27 @@ class CustomMolDataset(Dataset):
                     
     def find_ranges(self):
         """Computes max and min for features in the dataset."""
-        allX=np.array([entry[0] for entry in self])
-        allrange=np.zeros((allX.shape[1],2))
-        allrange[:,0]=np.min(allX, axis=0) # axis=0 loops ove all the ligands
-        allrange[:,1]=np.max(allX, axis=0)
-        return allrange
+        all_x=np.array([entry[0] for entry in self])
+        all_range=np.zeros((all_x.shape[1],2))
+        all_range[:,0]=np.min(all_x, axis=0) # axis=0 loops ove all the ligands
+        all_range[:,1]=np.max(all_x, axis=0)
+        return all_range
 
     def find_normalization_factors(self):
         """Computes normalization of features in the dataset."""
         self.normalize_x=False # temporarily disable normalization so we can get raw values
-        allX=np.array([entry[0] for entry in self])
-        self.norm_mu=np.mean(allX, axis=0)
+        all_x=np.array([entry[0] for entry in self])
+        self.norm_mu=np.mean(all_x, axis=0)
         
         # std sometimes overflows from very large feature values, so temporarily scale them
         ranges = self.find_ranges()
         scales = ranges[:,1]-ranges[:,0]
-        self.norm_width=np.std(allX/scales, axis=0)*scales
+        self.norm_width=np.std(all_x/scales, axis=0)*scales
         self.norm_width[self.norm_width<1e-7]=1.0 # if standard deviation is 0, don't scale
         self.normalize_x=True
         
         if self.verbose:
-            print(f"Generating normalization factors for a {allX.shape} dataset")
+            print(f"Generating normalization factors for a {all_x.shape} dataset")
                 
         # build in-memory cache
         self.build_internal_filtered_cache()
@@ -279,19 +288,19 @@ class CustomMolDataset(Dataset):
            rapid access of filtered features."""
         if(self.norm_mu is None and self.normalize_x):
             raise RuntimeError("call build_internal_filtered_cache() only after normalization!")
-        neededMem=len(self)*(self[0][0].shape[0]+self[0][1].shape[0])*self[0][1].itemsize
-        if neededMem>self._internal_cache_maxMem:
+        needed_mem=len(self)*(self[0][0].shape[0]+self[0][1].shape[0])*self[0][1].itemsize
+        if needed_mem>self._internal_cache_max_mem:
             raise MemoryError("Building the internal_filtered_cache needs"
-                              f" {neededMem/1024/1024} MB, more than the"
-                              f" {self._internal_cache_maxMem/1024/1024} MB limit.")
-        allX=[]
-        allY=[]
+                              f" {needed_mem/1024/1024} MB, more than the"
+                              f" {self._internal_cache_max_mem/1024/1024} MB limit.")
+        all_x=[]
+        all_y=[]
         for entry in self: # loop over self only once
-            allX.append(entry[0])
-            allY.append(entry[1])
-        allX=np.array(allX)
-        allY=np.array(allY)
-        self.internal_filtered_cache=(allX, allY)
+            all_x.append(entry[0])
+            all_y.append(entry[1])
+        all_x=np.array(all_x)
+        all_y=np.array(all_y)
+        self.internal_filtered_cache=(all_x, all_y)
         if self.verbose:
             print("Creating an in-memory filtered & normalized cache"
                   f" of shape ({self.internal_filtered_cache[0].shape},"
@@ -320,98 +329,65 @@ class CustomMolDataset(Dataset):
         if self.internal_filtered_cache is None:
         
             # load data from HDD or compute it
-            X = self.transform(idx).astype(np.float32)
-            Y = np.array([float(lig.GetProp('pIC50')) 
+            x = self.transform(idx).astype(np.float32)
+            y = np.array([float(lig.GetProp('pIC50')) 
                           if lig.HasProp('pIC50') else np.nan])
            
             # apply feature filter
             if not self.X_filter is None:
-                X=X[self.X_filter]
+                x=x[self.X_filter]
             # normalize
             if self.normalize_x:
-                X=self._normalize_input(X)
+                x=self._normalize_input(x)
                 
         # otherwize read the in-memory cache
         else:
-            X=self.internal_filtered_cache[0][idx]
-            Y=self.internal_filtered_cache[1][idx]
+            x=self.internal_filtered_cache[0][idx]
+            y=self.internal_filtered_cache[1][idx]
         
-        return X, Y
+        return x, y
             
             
     # Compute the different descriptors in blocks
-    def generate_DataBlock(self, lig, blockID):
+    def generate_data_block(self, lig, block_id):
         """Computes descriptors in a DataBlock for a single molecule."""
-        blockID = DataBlocks(blockID)
+        block_id = DataBlocks(block_id)
         
-        if blockID==DataBlocks.MACCS:
+        if block_id==DataBlocks.MACCS:
             Chem.GetSymmSSSR(lig)
-            MACCS_txt=cDataStructs.BitVectToText(
-                rdMolDescriptors.GetMACCSKeysFingerprint(lig)
-                )
-            MACCS_arr=np.zeros(len(MACCS_txt), dtype=np.uint8)
-            for j in range(len(MACCS_txt)):
-                if MACCS_txt[j]=="1":
-                    MACCS_arr[j]=1
-            return MACCS_arr
+            return bit_vect_to_array(rdMolDescriptors.GetMACCSKeysFingerprint(lig))
         
-        elif blockID==DataBlocks.MorganFP2:
+        if block_id==DataBlocks.MorganFP2:
             Chem.GetSymmSSSR(lig)
-            Morgan_txt=cDataStructs.BitVectToText(
-                rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 2)
-                )
-            Morgan_arr=np.zeros(len(Morgan_txt), dtype=np.uint8)
-            for j in range(len(Morgan_txt)):
-                if Morgan_txt[j]=="1":
-                    Morgan_arr[j]=1
-            return Morgan_arr
+            return bit_vect_to_array(rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 2))
             
-        elif blockID==DataBlocks.MorganFP3:
+        if block_id==DataBlocks.MorganFP3:
             Chem.GetSymmSSSR(lig)
-            Morgan_txt=cDataStructs.BitVectToText(
-                rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 3)
-                )
-            Morgan_arr=np.zeros(len(Morgan_txt), dtype=np.uint8)
-            for j in range(len(Morgan_txt)):
-                if Morgan_txt[j]=="1":
-                    Morgan_arr[j]=1
-            return Morgan_arr
+            return bit_vect_to_array(rdMolDescriptors.GetMorganFingerprintAsBitVect(lig, 3))
         
-        elif blockID==DataBlocks.rdkitFP:
+        if block_id==DataBlocks.rdkitFP:
             Chem.GetSymmSSSR(lig)
-            rdkitFingerprint_txt=cDataStructs.BitVectToText(Chem.rdmolops.RDKFingerprint(lig))
-            rdkitFingerprint_arr=np.zeros(len(rdkitFingerprint_txt), dtype=np.uint8)
-            for j in range(len(rdkitFingerprint_txt)):
-                if rdkitFingerprint_txt[j]=="1":
-                    rdkitFingerprint_arr[j]=1
-            return rdkitFingerprint_arr
+            return bit_vect_to_array(Chem.rdmolops.RDKFingerprint(lig))
         
-        elif blockID==DataBlocks.minFeatFP:
+        if block_id==DataBlocks.minFeatFP:
             Chem.GetSymmSSSR(lig)
-            minFeatFingerprint_txt=cDataStructs.BitVectToText(
-                Generate.Gen2DFingerprint(lig, self.sigFactory)
-                )
-            minFeatFingerprint_arr=np.zeros(len(minFeatFingerprint_txt), dtype=np.uint8)
-            for j in range(len(minFeatFingerprint_txt)):
-                if minFeatFingerprint_txt[j]=="1":
-                    minFeatFingerprint_arr[j]=1
-            return minFeatFingerprint_arr
+            return bit_vect_to_array(Generate.Gen2DFingerprint(lig, self.sig_factory))
     
-        elif blockID==DataBlocks.Descriptors:
+        if block_id==DataBlocks.Descriptors:
             nms=[x[0] for x in Descriptors._descList]
             calc = MoleculeDescriptors.MolecularDescriptorCalculator(nms)
             des = np.array(calc.CalcDescriptors(lig))
             return des
         
-        elif blockID==DataBlocks.EState_FP:
-            ES=Fingerprinter.FingerprintMol(lig)
+        if block_id==DataBlocks.EState_FP:
+            electric_state=Fingerprinter.FingerprintMol(lig)
             funcs=getmembers(rdkit.Chem.GraphDescriptors, isfunction)
             funcs=[f[1] for f in funcs if f[0][0]!='_' and len(getfullargspec(f[1])[0])==1]
-            ES_VSA=np.array([f(lig) for f in funcs])
-            ES_FP=np.concatenate((ES[0],ES[1],ES_VSA))
-            return ES_FP
+            electric_state_VSA=np.array([f(lig) for f in funcs])
+            finger_print=np.concatenate((electric_state[0],electric_state[1],electric_state_VSA))
+            return finger_print
     
-        elif blockID==DataBlocks.Graph_desc:
+        if block_id==DataBlocks.Graph_desc:
             funcs=getmembers(rdkit.Chem.GraphDescriptors, isfunction)
             funcs=[f[1] for f in funcs if f[0][0]!='_' and len(getfullargspec(f[1])[0])==1]
             funcs+=[wiener_index]
@@ -419,46 +395,45 @@ class CustomMolDataset(Dataset):
             return graph_desc
     
         
-        #extras
-        elif blockID==DataBlocks.MOE:
+        # extras
+        if block_id==DataBlocks.MOE:
             funcs=getmembers(rdkit.Chem.MolSurf, isfunction)
             funcs=[f[1] for f in funcs if f[0][0]!='_' and len(getfullargspec(f[1])[0])==1]
-            MOE=np.array([f(lig) for f in funcs])
-            return MOE
-        elif blockID==DataBlocks.MQN:
+            return np.array([f(lig) for f in funcs])
+        if block_id==DataBlocks.MQN:
             return np.array(rdMolDescriptors.MQNs_(lig))
-        elif blockID==DataBlocks.GETAWAY:
+        if block_id==DataBlocks.GETAWAY:
             return np.array(rdMolDescriptors.CalcGETAWAY(lig))
-        elif blockID==DataBlocks.AUTOCORR2D:
+        if block_id==DataBlocks.AUTOCORR2D:
             return np.array(rdMolDescriptors.CalcAUTOCORR2D(lig))
-        elif blockID==DataBlocks.AUTOCORR3D:
+        if block_id==DataBlocks.AUTOCORR3D:
             return np.array(rdMolDescriptors.CalcAUTOCORR3D(lig))
-        elif blockID==DataBlocks.BCUT2D:
+        if block_id==DataBlocks.BCUT2D:
             return np.array(rdMolDescriptors.BCUT2D(lig))
-        elif blockID==DataBlocks.WHIM:
+        if block_id==DataBlocks.WHIM:
             return np.array(rdMolDescriptors.CalcWHIM(lig))
-        elif blockID==DataBlocks.RDF:
+        if block_id==DataBlocks.RDF:
             return np.array(rdMolDescriptors.CalcRDF(lig))
-        elif blockID==DataBlocks.USR:
+        if block_id==DataBlocks.USR:
             return np.array(rdMolDescriptors.GetUSR(lig))
-        elif blockID==DataBlocks.USRCUT:
+        if block_id==DataBlocks.USRCUT:
             return np.array(rdMolDescriptors.GetUSRCAT(lig))
-        elif blockID==DataBlocks.PEOE_VSA:
+        if block_id==DataBlocks.PEOE_VSA:
             return np.array(rdMolDescriptors.PEOE_VSA_(lig))
-        elif blockID==DataBlocks.SMR_VSA:
+        if block_id==DataBlocks.SMR_VSA:
             return np.array(rdMolDescriptors.SMR_VSA_(lig))
-        elif blockID==DataBlocks.SlogP_VSA:
+        if block_id==DataBlocks.SlogP_VSA:
             return np.array(rdMolDescriptors.SlogP_VSA_(lig))
-        elif blockID==DataBlocks.MORSE:
+        if block_id==DataBlocks.MORSE:
             return np.array(rdMolDescriptors.CalcMORSE(lig))
             
-        else:
-            raise NotImplementedError(f"Unsupported dataBlock requested: {blockID}")
+        raise NotImplementedError(f"Unsupported dataBlock requested: {block_id}")
         
         
             
     # load descriptors from HDD or compute them via transform()
     def transform(self, lig_idx):
+        """Computes all active descriptors for a molecule."""
         vecs=[]
                 
         # iterate through requested blocks of descriptors
@@ -466,25 +441,25 @@ class CustomMolDataset(Dataset):
             
             # first try reading from cache
             if self.use_hdf5_cache:
-                lig_ID = self.ligs[lig_idx].GetProp("ID")
-                node = f"{lig_ID}/{DataBlocks(i).name}"
+                lig_id = self.ligs[lig_idx].GetProp("ID")
+                node = f"{lig_id}/{DataBlocks(i).name}"
                 # is there an entry for this ligand & dataBlock?
                 if node in self.cache_fp.keys():
-                    X_block_rep = self.cache_fp[node] # then read it
-                    vecs.append(X_block_rep) #and add it to the overall representation
+                    x_block_rep = self.cache_fp[node] # then read it
+                    vecs.append(x_block_rep) #and add it to the overall representation
                     continue # next dataBlock
                     
             #if not cashed, compute it
-            X_block_rep = self.generate_DataBlock(self.ligs[lig_idx], i)
-            vecs.append(X_block_rep) #add to overall representation
+            x_block_rep = self.generate_data_block(self.ligs[lig_idx], i)
+            vecs.append(x_block_rep) #add to overall representation
                   
             # and cache it if in append mode
             if(self.use_hdf5_cache and 
-               not (self.use_hdf5_cache=="read-only" or self.use_hdf5_cache=="r")
+               not (self.use_hdf5_cache in ["read-only","r"])
               ):
                 
-                lig_ID = self.ligs[lig_idx].GetProp("ID")
-                node = f"{lig_ID}/{DataBlocks(i).name}"
-                self.cache_fp.create_dataset(node, data=X_block_rep, dtype='f')
+                lig_id = self.ligs[lig_idx].GetProp("ID")
+                node = f"{lig_id}/{DataBlocks(i).name}"
+                self.cache_fp.create_dataset(node, data=x_block_rep, dtype='f')
                 
         return(np.concatenate(tuple(vecs), axis=0)) # flatten into a 1D array
