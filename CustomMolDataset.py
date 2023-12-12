@@ -267,7 +267,7 @@ class CustomMolDataset(Dataset):
             raise(Exception("call build_internal_filtered_cache() only after normalization!"))
         neededMem=len(self)*(self[0][0].shape[0]+self[0][1].shape[0])*self[0][1].itemsize
         if(neededMem>self._internal_cache_maxMem):
-            print(f"Building the internal_filtered_cache needs {neededMem/1024/1024} MB, more than the {self._internal_cache_maxMem/1024/1024} MB limit. SKIPPING and will read samples from HDD each time instead.")
+            raise MemoryError(f"Building the internal_filtered_cache needs {neededMem/1024/1024} MB, more than the {self._internal_cache_maxMem/1024/1024} MB limit.")
             return()
         allX=[]
         allY=[]
