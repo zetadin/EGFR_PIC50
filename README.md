@@ -45,6 +45,12 @@ Hyper-parameter searches were performed using 5-fold cross-validation for models
 hyper-parameters. Training samples were weighted to compensate class imballance where model
 implementations support this.
 
+My previous experience had shown that including 3D descriptors derrived from docked molecular
+structures in adition to coordinate independent descriptors
+improved accuracy of neural network regression models of binding affinity.
+Therefore, I took this project as an opportunity to test if they are still helpful without docking.
+The unsurprising conclusion is no, they are not.
+
 
 Please use prerequisite module versions specified in requirements.txt: 
 	pip3 install -r requirements.txt
