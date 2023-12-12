@@ -26,6 +26,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     parser.print_help()
+    print("\n\n") # add some space after help
        
     # load SMILES strings from input file
     smis = []
@@ -52,6 +53,7 @@ if __name__ == "__main__":
     # Used to eliminate duplicate and non-finite descriptors
     with open("X_filt_no3D.pickle", 'rb') as f:
         X_filt = pickle.load(f)
+    print(f"Loaded a feature filter that retains {len(X_filt)} features.")
         
     # create a dataset instance that will calculate all the 2D descriptors
     descriptorBlocknames = ["MACCS", "rdkitFP", "MorganFP2", "MorganFP3",
@@ -72,7 +74,8 @@ if __name__ == "__main__":
         _, _ = ds[i]
         
     # load feature normalization constants
-    
+    # This will force the CustomMolDataset to normalize descriptors for the new molecules the same way as during training
+    ds.read_normalization_factors("EGFR_set_all_features_NormFactors_6740_Features.pickle")
     
     # load model
     with open("models_for_inference.pickle", 'rb') as f:
