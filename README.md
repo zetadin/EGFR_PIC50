@@ -45,3 +45,8 @@ Hyper-parameter searches were performed using 5-fold cross-validation for models
 hyper-parameters. Training samples were weighted to compensate class imballance where model
 implementations support this.
 
+
+Please use prerequisite module versions specified in requirements.txt: 
+	pip3 install -r requirements.txt
+Newer versions of RDKit, for example, raise a warning about Crippen logP calculations
+when building descriptors.
