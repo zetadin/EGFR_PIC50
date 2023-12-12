@@ -5,22 +5,28 @@ is the most natural.
 
 The jupyter notebook files in this repository track my desicion-making process
 for building a classifier to distinguish active (pIC50>8) from inactive molecules
-for binding with EGFR.
+for binding with EGFR. While the prediction pipeline is in a standalone file.
 
-Step1_DatasetExploration.ipynb looks at the relevant experimental dataset and
+- predictionPipeline.py runs the prediction pipeline by reading SMILES srings from
+an input file. It has built in documentation acessible via "predictionPipeline.py -h".
+It expects to be run in the curent folder, as it loads saved models and feature
+engineering information from local files. It can be tested with "predTest.smi",
+its default input and can output SMILES of identified actives to screen or file.
+
+- Step1_DatasetExploration.ipynb looks at the relevant experimental dataset and
 builds RDKit molecule instances for all SMILES strings in it. This file also
 generates 3D conformations for them.
 
-Step2_GenerateFeatures.ipynb generates both 2D and 3D descriptors for the molecules
+- Step2_GenerateFeatures.ipynb generates both 2D and 3D descriptors for the molecules
 with the help of a pyTorch Dataset subclass defined in CustomMolDataset.py.
 
-CustomMolDataset.py defines a pyTorch Dataset subclass that precomputes most molecular
+- CustomMolDataset.py defines a pyTorch Dataset subclass that precomputes most molecular
 descriptors available in RDKit and chaches them in an hdf5 file for quick retriaval.
 It also supports feature selection via an index filter, feature normalization,
 as well as an in-memory cache for the normalized data, when it fits into RAM.
 This file is adapted from one of my previous projects (https://github.com/zetadin/TransferLearningFromPLS).
 
-Step3_TrainSimpleModels.ipynb goes through a number of classifier model types available in
+- Step3_TrainSimpleModels.ipynb goes through a number of classifier model types available in
 scikit-learn and compares their performance on feature sets of both 2D and 2D+3D descriptors.
 Including 3D descriptors reduces performance of most models. Best performance is obtained with
 a Support Vector Machine classifier with a Radial Basis Function kernel.
